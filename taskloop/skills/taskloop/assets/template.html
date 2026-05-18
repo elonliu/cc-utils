@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Taskloop</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f0f2f5; min-height: 100vh; }
+
+/* Status bar */
+.status-bar {
+  background: #fff; border-bottom: 1px solid #d9d9d9; padding: 8px 16px;
+  display: flex; align-items: center; justify-content: space-between;
+  position: sticky; top: 0; z-index: 100;
+}
+.status-bar .sync-status { font-size: 13px; color: #666; display: flex; align-items: center; gap: 6px; }
+.status-bar .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: #52c41a; }
+.status-bar .sync-dot.pending { background: #faad14; }
+.status-bar .sync-dot.saving { background: #1677ff; }
+.status-bar .sync-dot.error { background: #ff4d4f; }
+.status-bar .actions { display: flex; gap: 8px; }
+.status-bar .btn {
+  padding: 4px 12px; border: 1px solid #d9d9d9; border-radius: 4px;
+  background: #fff; cursor: pointer; font-size: 13px; color: #333;
+}
+.status-bar .btn:hover { background: #f5f5f5; }
+.status-bar .btn.primary { background: #1677ff; color: #fff; border-color: #1677ff; }
+
+/* Board */
+.board {
+  display: flex; gap: 12px; padding: 16px; min-height: calc(100vh - 44px);
+}
+.column {
+  flex: 1; background: #e8e8e8; border-radius: 8px; padding: 12px;
+  min-height: 200px; display: flex; flex-direction: column;
+}
+.column-header {
+  font-size: 14px; font-weight: 600; color: #333; padding: 4px 8px;
+  margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;
+}
+.column-header .count { font-size: 12px; color: #999; font-weight: 400; }
+.column.drag-over { background: #d6e4ff; }
+.column.pending { background: #e8f5e9; }
+.column.in_progress { background: #e3f2fd; }
+.column.completed { background: #f5f5f5; }
+.column.failed { background: #fff3e0; }
+
+/* Cards */
+.card {
+  background: #fff; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px;
+  cursor: grab; border-left: 3px solid #1677ff; box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+  transition: box-shadow 0.2s, transform 0.2s;
+}
+.card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+.card:active { cursor: grabbing; }
+.card.dragging { opacity: 0.5; transform: rotate(2deg); }
+.card.locked { background: #f5f5f5; opacity: 0.7; pointer-events: none; }
+.card.locked::after { content: "🔒"; position: absolute; top: 4px; right: 8px; font-size: 12px; }
+
+.card .card-title { font-size: 14px; color: #333; margin-bottom: 4px; font-weight: 500; }
+.card .card-desc { font-size: 12px; color: #999; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .card-meta { display: flex; gap: 4px; margin-top: 6px; }
+.card .tag {
+  font-size: 11px; padding: 1px 6px; border-radius: 3px; font-weight: 500;
+}
+.tag.bug { background: #fff2f0; color: #ff4d4f; }
+.tag.feature { background: #e6f4ff; color: #1677ff; }
+.tag.high { background: #fff7e6; color: #fa8c16; }
+.tag.medium { background: #f6ffed; color: #52c41a; }
+.tag.low { background: #f0f0f0; color: #8c8c8c; }
+
+/* Empty state */
+.column .empty { font-size: 13px; color: #999; text-align: center; padding: 20px; }
+
+/* Modal */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 200;
+  display: none; align-items: center; justify-content: center;
+}
+.modal-overlay.active { display: flex; }
+.modal {
+  background: #fff; border-radius: 8px; padding: 24px; width: 480px; max-width: 90vw;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+}
+.modal h3 { margin-bottom: 16px; font-size: 16px; }
+.modal label { display: block; font-size: 13px; color: #666; margin-bottom: 4px; margin-top: 12px; }
+.modal input, .modal textarea, .modal select {
+  width: 100%; padding: 8px; border: 1px solid #d9d9d9; border-radius: 4px;
+  font-size: 14px; font-family: inherit;
+}
+.modal textarea { min-height: 80px; resize: vertical; }
+.modal .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+/* Drag placeholder */
+.drag-placeholder { border: 2px dashed #91caff; border-radius: 6px; margin-bottom: 8px; min-height: 40px; background: rgba(22,119,255,0.05); }
+
+/* Responsive */
+@media (max-width: 768px) { .board { flex-direction: column; } }
+</style>
+</head>
+<body>
+
+<div class="status-bar">
+  <div class="sync-status">
+    <span class="sync-dot" id="syncDot"></span>
+    <span id="syncText">加载中...</span>
+  </div>
+  <div class="actions">
+    <button class="btn" onclick="exportData()" title="导出 JSON（降级模式）">导出 JSON</button>
+    <button class="btn primary" onclick="syncTasks()">同步到 Claude Code</button>
+  </div>
+</div>
+
+<div class="board" id="board">
+  <div class="column pending" data-status="pending" ondragover="onDragOver(event)" ondrop="onDrop(event)">
+    <div class="column-header">Pending <span class="count" id="count-pending">0</span></div>
+    <div class="cards" id="pending-cards"></div>
+  </div>
+  <div class="column in_progress" data-status="in_progress" ondragover="onDragOver(event)" ondrop="onDrop(event)">
+    <div class="column-header">In Progress <span class="count" id="count-in_progress">0</span></div>
+    <div class="cards" id="in_progress-cards"></div>
+  </div>
+  <div class="column completed" data-status="completed" ondragover="onDragOver(event)" ondrop="onDrop(event)">
+    <div class="column-header">Completed <span class="count" id="count-completed">0</span></div>
+    <div class="cards" id="completed-cards"></div>
+  </div>
+  <div class="column failed" data-status="failed" ondragover="onDragOver(event)" ondrop="onDrop(event)">
+    <div class="column-header">Failed <span class="count" id="count-failed">0</span></div>
+    <div class="cards" id="failed-cards"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h3 id="modalTitle">编辑任务</h3>
+    <label>标题</label>
+    <input type="text" id="editSubject" />
+    <label>描述</label>
+    <textarea id="editDescription"></textarea>
+    <label>类型</label>
+    <select id="editType">
+      <option value="">未设置</option>
+      <option value="bug">Bug</option>
+      <option value="feature">Feature</option>
+    </select>
+    <label>优先级</label>
+    <select id="editPriority">
+      <option value="">未设置</option>
+      <option value="high">高</option>
+      <option value="medium">中</option>
+      <option value="low">低</option>
+    </select>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn primary" onclick="saveTask()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let tasks = [];
+let pendingChanges = false;
+let saveTimeout = null;
+let currentEditId = null;
+
+// Load data
+async function loadData() {
+  try {
+    const res = await fetch('/api/tasks');
+    if (res.ok) {
+      const data = await res.json();
+      tasks = data.tasks || [];
+      setSyncStatus('已同步', 'ok');
+    }
+  } catch (e) {
+    setSyncStatus('服务器不可用，使用导出模式', 'error');
+    // Try loading from embedded data or localStorage
+    const cached = localStorage.getItem('taskloop-data');
+    if (cached) {
+      try {
+        tasks = JSON.parse(cached).tasks || [];
+        setSyncStatus('使用本地缓存', 'pending');
+      } catch {}
+    }
+  }
+  render();
+}
+
+// Auto-save after changes
+function markChanged() {
+  pendingChanges = true;
+  setSyncStatus('有未保存变更', 'pending');
+  clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(saveData, 800);
+}
+
+async function saveData() {
+  try {
+    const res = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tasks, updated_at: new Date().toISOString() })
+    });
+    if (res.ok) {
+      pendingChanges = false;
+      setSyncStatus('已同步', 'ok');
+      // Also cache locally
+      localStorage.setItem('taskloop-data', JSON.stringify({ tasks }));
+    } else {
+      setSyncStatus('保存失败', 'error');
+    }
+  } catch (e) {
+    setSyncStatus('保存失败：' + e.message, 'error');
+    // Cache locally
+    localStorage.setItem('taskloop-data', JSON.stringify({ tasks }));
+  }
+}
+
+// Poll for server updates (e.g., lock status changes from AI)
+setInterval(async () => {
+  try {
+    const res = await fetch('/api/tasks');
+    if (res.ok) {
+      const data = await res.json();
+      // Only sync if there are local changes that might be stale
+      if (!pendingChanges) {
+        tasks = data.tasks || [];
+        render();
+      }
+    }
+  } catch {
+    // Server down, continue with cached data
+  }
+}, 5000);
+
+function setSyncStatus(text, state) {
+  document.getElementById('syncText').textContent = text;
+  const dot = document.getElementById('syncDot');
+  dot.className = 'sync-dot';
+  if (state === 'pending') dot.classList.add('pending');
+  else if (state === 'saving') dot.classList.add('saving');
+  else if (state === 'error') dot.classList.add('error');
+}
+
+function render() {
+  const pending = tasks.filter(t => t.status === 'pending' || t.status === null || t.status === '');
+  const inProgress = tasks.filter(t => t.status === 'in_progress');
+  const completed = tasks.filter(t => t.status === 'completed');
+  const failed = tasks.filter(t => t.status === 'failed');
+
+  ['pending', 'in_progress', 'completed', 'failed'].forEach(status => {
+    const container = document.getElementById(`${status}-cards`);
+    const data = status === 'pending' ? pending : status === 'in_progress' ? inProgress : status === 'completed' ? completed : failed;
+    document.getElementById(`count-${status}`).textContent = data.length;
+    if (data.length === 0) {
+      container.innerHTML = '<div class="empty">暂无任务</div>';
+      return;
+    }
+    container.innerHTML = data.sort((a, b) => (a.order || 0) - (b.order || 0)).map(t => renderCard(t)).join('');
+  });
+}
+
+function renderCard(t) {
+  const locked = t.metadata && t.metadata.locked;
+  const tags = [];
+  if (t.type) tags.push(`<span class="tag ${t.type}">${t.type === 'bug' ? 'Bug' : 'Feature'}</span>`);
+  if (t.priority) tags.push(`<span class="tag ${t.priority}">${t.priority === 'high' ? '高' : t.priority === 'medium' ? '中' : '低'}</span>`);
+  return `<div class="card ${locked ? 'locked' : ''}" draggable="${locked ? 'false' : 'true'}" data-id="${t.id}"
+    ondragstart="onDragStart(event)" ondragend="onDragEnd(event)" ondblclick="openModal('${t.id}')">
+    <div class="card-title">${escapeHtml(t.subject || '无标题')}</div>
+    ${t.description ? `<div class="card-desc">${escapeHtml(t.description)}</div>` : ''}
+    ${tags.length ? `<div class="card-meta">${tags.join('')}</div>` : ''}
+  </div>`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#x27;').replace(/\//g, '&#x2F;');
+}
+
+// Drag & Drop
+let dragId = null;
+
+function onDragStart(e) {
+  dragId = e.target.dataset.id;
+  e.target.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', dragId);
+}
+
+function onDragEnd(e) {
+  e.target.classList.remove('dragging');
+  document.querySelectorAll('.column').forEach(c => c.classList.remove('drag-over'));
+  document.querySelectorAll('.drag-placeholder').forEach(p => p.remove());
+}
+
+function onDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const col = e.target.closest('.column');
+  if (col) {
+    document.querySelectorAll('.column').forEach(c => c.classList.remove('drag-over'));
+    col.classList.add('drag-over');
+  }
+  // Insert placeholder
+  const container = e.target.closest('.cards') || e.target;
+  if (container && container.classList.contains('cards')) {
+    document.querySelectorAll('.drag-placeholder').forEach(p => p.remove());
+    const placeholder = document.createElement('div');
+    placeholder.className = 'drag-placeholder';
+    const afterElement = getDragAfterElement(container, e.clientY);
+    if (afterElement) container.insertBefore(placeholder, afterElement);
+    else container.appendChild(placeholder);
+  }
+}
+
+function getDragAfterElement(container, y) {
+  const elements = [...container.querySelectorAll('.card:not(.dragging)')];
+  return elements.find(el => {
+    const rect = el.getBoundingClientRect();
+    return y < rect.top + rect.height / 2;
+  });
+}
+
+function onDrop(e) {
+  e.preventDefault();
+  const col = e.target.closest('.column');
+  if (!col || !dragId) return;
+  const newStatus = col.dataset.status;
+  const task = tasks.find(t => t.id === dragId);
+  if (!task) return;
+
+  // Calculate new order using median of surrounding siblings
+  const container = col.querySelector('.cards');
+  const placeholder = container.querySelector('.drag-placeholder');
+  let newOrder = 0;
+
+  if (placeholder) {
+    const prevId = placeholder.previousElementSibling?.dataset?.id;
+    const nextId = placeholder.nextElementSibling?.dataset?.id;
+    const prevOrder = prevId ? getOrder(prevId) : -10;
+    const nextOrder = nextId ? getOrder(nextId) : prevOrder + 20;
+    newOrder = Math.floor((prevOrder + nextOrder) / 2);
+  } else {
+    // No placeholder — dropping into empty column or fallback
+    const cardsInCol = [...container.querySelectorAll('.card')];
+    newOrder = cardsInCol.length * 10;
+  }
+
+  task.status = newStatus;
+  task.order = newOrder;
+  render();
+  markChanged();
+  dragId = null;
+  document.querySelectorAll('.drag-placeholder').forEach(p => p.remove());
+}
+
+function getOrder(id) {
+  const t = tasks.find(t => t.id === id);
+  return t ? (t.order || 0) : 0;
+}
+
+// Modal
+function openModal(id) {
+  const t = tasks.find(t => t.id === id);
+  if (!t || (t.metadata && t.metadata.locked)) return;
+  currentEditId = id;
+  document.getElementById('editSubject').value = t.subject || '';
+  document.getElementById('editDescription').value = t.description || '';
+  document.getElementById('editType').value = t.type || '';
+  document.getElementById('editPriority').value = t.priority || '';
+  document.getElementById('modalTitle').textContent = '编辑任务 #' + id;
+  document.getElementById('modal').classList.add('active');
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.remove('active');
+  currentEditId = null;
+}
+
+function saveTask() {
+  const t = tasks.find(t => t.id === currentEditId);
+  if (!t) return;
+  t.subject = document.getElementById('editSubject').value;
+  t.description = document.getElementById('editDescription').value;
+  t.type = document.getElementById('editType').value;
+  t.priority = document.getElementById('editPriority').value;
+  closeModal();
+  render();
+  markChanged();
+}
+
+// Export / Sync
+function exportData() {
+  const data = JSON.stringify({ tasks, updated_at: new Date().toISOString() }, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'taskloop-data.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function syncTasks() {
+  // Copy JSON to clipboard for pasting to Claude Code
+  const data = JSON.stringify({ tasks, updated_at: new Date().toISOString() }, null, 2);
+  navigator.clipboard.writeText(data).then(() => {
+    alert('任务数据已复制到剪贴板，请粘贴给 Claude Code');
+  }).catch(() => {
+    // Fallback: show in textarea
+    const text = prompt('请复制以下内容给 Claude Code:', data);
+  });
+}
+
+// Init
+loadData();
+</script>
+</body>
+</html>
