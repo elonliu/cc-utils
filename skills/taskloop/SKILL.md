@@ -190,5 +190,3 @@ python <skill_dir>/scripts/server.py --dir <skill_dir>/assets --port 8765
 - HTTP 服务器：`<skill_dir>/scripts/server.py`
 - TUI 脚本：`<skill_dir>/scripts/tui.sh`
 - HTML 模板：`<skill_dir>/assets/template.html`
-
-安装到 Claude Code：将 `taskloop/` 目录软链接或复制到 `~/.claude/plugins/local/taskloop/`，或放在项目根目录下作为 local plugin。

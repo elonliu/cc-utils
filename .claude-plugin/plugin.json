@@ -1,0 +1,10 @@
+{
+  "name": "taskloop",
+  "description": "Task queue and continuous execution loop with TUI and HTML views for Claude Code",
+  "version": "0.1.0",
+  "author": {
+    "name": "Elon Liu"
+  },
+  "license": "MIT",
+  "keywords": ["task", "queue", "kanban", "tui", "automation", "loop"]
+}
